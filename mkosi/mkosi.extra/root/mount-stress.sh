@@ -57,7 +57,7 @@ echo "Background done: $(wc -l < /proc/self/mountinfo) entries in mountinfo"
 if command -v perf >/dev/null 2>&1; then
     echo "=== Starting perf trace on PID $SYSTEMD_PID ==="
     rm -f "$PERF_OUTPUT"
-    perf trace -s -e "$SYSCALLS" -p "$SYSTEMD_PID" -- sleep 600 2>"$PERF_OUTPUT" &
+    perf trace -s -m 64M -e "$SYSCALLS" -p "$SYSTEMD_PID" -- sleep 600 2>"$PERF_OUTPUT" &
     PERF_PID=$!
     sleep 0.5
 fi
