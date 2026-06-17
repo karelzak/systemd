@@ -1941,15 +1941,17 @@ static int mount_load_kernel_mounttable(Manager *m, bool set_flags) {
         assert(m);
 
         r = libmount_fetch_listmount(&table, &iter);
-        if (r >= 0)
+        if (r >= 0) {
                 use_listmount = true;
-        else {
+                log_debug("Using listmount() for mount table");
+        } else {
                 if (r != -EOPNOTSUPP)
                         log_debug_errno(r, "Failed to use listmount, falling back to /proc/self/mountinfo: %m");
 
                 r = libmount_parse_with_utab(&table, &iter);
                 if (r < 0)
                         return log_error_errno(r, "Failed to parse /proc/self/mountinfo: %m");
+                log_debug("Using /proc/self/mountinfo for mount table");
         }
 
         for (;;) {
@@ -1987,6 +1989,14 @@ static int mount_load_kernel_mounttable(Manager *m, bool set_flags) {
 
 static void mount_shutdown(Manager *m) {
         assert(m);
+
+        if (m->mount_dispatch_count > 0)
+                log_info("Mount monitor shutdown: total dispatches=%u, total_time=%s",
+                         m->mount_dispatch_count,
+                         FORMAT_TIMESPAN(m->mount_dispatch_total_usec, USEC_PER_MSEC));
+
+        m->mount_dispatch_total_usec = 0;
+        m->mount_dispatch_count = 0;
 
         m->mount_event_source = sd_event_source_disable_unref(m->mount_event_source);
 
@@ -2327,10 +2337,23 @@ static int mount_process_kernel_mounttable(Manager *m) {
 #if HAVE_LIBMOUNT
 static int mount_dispatch_io(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
         Manager *m = ASSERT_PTR(userdata);
+        int r;
 
         assert(revents & EPOLLIN);
 
-        return mount_process_kernel_mounttable(m);
+        usec_t start = now(CLOCK_MONOTONIC);
+
+        r = mount_process_kernel_mounttable(m);
+
+        usec_t elapsed = usec_sub_unsigned(now(CLOCK_MONOTONIC), start);
+        m->mount_dispatch_total_usec += elapsed;
+        m->mount_dispatch_count++;
+
+        log_info("Mount monitor: dispatch #%u, time=%s",
+                 m->mount_dispatch_count,
+                 FORMAT_TIMESPAN(elapsed, 1));
+
+        return r;
 }
 #endif
 
