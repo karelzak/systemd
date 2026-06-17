@@ -1872,6 +1872,7 @@ static int mount_setup_unit(
                 const char *where,
                 const char *options,
                 const char *fstype,
+                uint64_t uniq_id,
                 bool set_flags) {
 
         _cleanup_free_ char *e = NULL;
@@ -1918,6 +1919,8 @@ static int mount_setup_unit(
         if (r < 0)
                 return log_warning_errno(r, "Failed to set up mount unit for '%s': %m", where);
 
+        MOUNT(u)->uniq_id = uniq_id;
+
         /* If the mount changed properties or state, let's notify our clients */
         if (flags & (MOUNT_PROC_JUST_CHANGED|MOUNT_PROC_JUST_MOUNTED))
                 unit_add_to_dbus_queue(u);
@@ -1932,28 +1935,39 @@ static int mount_load_kernel_mounttable(Manager *m, bool set_flags) {
         _cleanup_(mnt_free_tablep) struct libmnt_table *table = NULL;
         _cleanup_(mnt_free_iterp) struct libmnt_iter *iter = NULL;
         _cleanup_set_free_ Set *devices = NULL;
+        bool use_listmount = false;
         int r;
 
         assert(m);
 
-        r = libmount_parse_with_utab(&table, &iter);
-        if (r < 0)
-                return log_error_errno(r, "Failed to parse /proc/self/mountinfo: %m");
+        r = libmount_fetch_listmount(&table, &iter);
+        if (r >= 0)
+                use_listmount = true;
+        else {
+                if (r != -EOPNOTSUPP)
+                        log_debug_errno(r, "Failed to use listmount, falling back to /proc/self/mountinfo: %m");
+
+                r = libmount_parse_with_utab(&table, &iter);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to parse /proc/self/mountinfo: %m");
+        }
 
         for (;;) {
                 struct libmnt_fs *fs;
                 const char *device, *path, *options, *fstype;
+                uint64_t uniq_id;
 
                 r = sym_mnt_table_next_fs(table, iter, &fs);
                 if (r == 1)
                         break;
                 if (r < 0)
-                        return log_error_errno(r, "Failed to get next entry from /proc/self/mountinfo: %m");
+                        return log_error_errno(r, "Failed to get next entry from mount table: %m");
 
                 device = sym_mnt_fs_get_source(fs);
                 path = sym_mnt_fs_get_target(fs);
                 options = sym_mnt_fs_get_options(fs);
                 fstype = sym_mnt_fs_get_fstype(fs);
+                uniq_id = use_listmount ? sym_mnt_fs_get_uniq_id(fs) : 0;
 
                 if (!device || !path)
                         continue;
@@ -1964,7 +1978,7 @@ static int mount_load_kernel_mounttable(Manager *m, bool set_flags) {
                 if (set_put_strdup_full(&devices, &path_hash_ops_free, device) != 0)
                         device_found_node(m, device, DEVICE_FOUND_MOUNT, DEVICE_FOUND_MOUNT);
 
-                (void) mount_setup_unit(m, device, path, options, fstype, set_flags);
+                (void) mount_setup_unit(m, device, path, options, fstype, uniq_id, set_flags);
         }
 
         return 0;
